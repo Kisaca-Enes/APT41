@@ -1,36 +1,68 @@
 #include <stdio.h>
 #include <string.h>
 #include <openssl/hmac.h>
+#include <stdlib.h>
 
-int main(void) {
-    const unsigned char *key = (unsigned char *)"secret-key-98988";
-    const unsigned char *data = (unsigned char *)"[COMMAND=PING][USERID=1234]";
-    unsigned char *result;
-    unsigned int result_len = 0;
+// Simule edilen "ViewState payload" yapısı
+typedef struct {
+    char command[32];
+    char user[32];
+} ViewStatePayload;
 
-    // Compute HMAC-SHA256
-    result = HMAC(EVP_sha256(), key, strlen((const char*)key), data, strlen((const char*)data), NULL, &result_len);
-    if (!result) {
-        fprintf(stderr, "HMAC failed\n");
-        return 1;
-    }
+// Basit serialize: struct -> string
+void serialize_payload(ViewStatePayload *payload, char *out, size_t out_size) {
+    snprintf(out, out_size, "[COMMAND=%s][USER=%s]", payload->command, payload->user);
+}
 
-    // Print HMAC hex
+// Basit deserialize: string -> struct
+void deserialize_payload(const char *in, ViewStatePayload *payload) {
+    sscanf(in, "[COMMAND=%31[^]]][USER=%31[^]]]", payload->command, payload->user);
+}
+
+int main() {
+    // 1️⃣ Gizli MAC key (server side)
+    const unsigned char *key = (unsigned char *)"secret-key-12345";
+
+    // 2️⃣ Kullanıcıdan gelen ViewState payload
+    ViewStatePayload payload;
+    strcpy(payload.command, "PING");
+    strcpy(payload.user, "1234");
+
+    char serialized[128];
+    serialize_payload(&payload, serialized, sizeof(serialized));
+
+    printf("Serialized ViewState: %s\n", serialized);
+
+    // 3️⃣ HMAC hesapla (MAC ile payload imzalanıyor)
+    unsigned char *hmac_result;
+    unsigned int hmac_len = 0;
+    hmac_result = HMAC(EVP_sha256(), key, strlen((const char*)key),
+                       (unsigned char*)serialized, strlen(serialized),
+                       NULL, &hmac_len);
+
     printf("HMAC-SHA256: ");
-    for (unsigned int i = 0; i < result_len; ++i)
-        printf("%02x", result[i]);
+    for (unsigned int i = 0; i < hmac_len; i++)
+        printf("%02x", hmac_result[i]);
     printf("\n");
 
-    // Verification example
+    // 4️⃣ Payload ve HMAC doğrulama (server side)
     unsigned char verify[EVP_MAX_MD_SIZE];
     unsigned int verify_len = 0;
-    HMAC(EVP_sha256(), key, strlen((const char*)key), data, strlen((const char*)data), verify, &verify_len);
+    HMAC(EVP_sha256(), key, strlen((const char*)key),
+         (unsigned char*)serialized, strlen(serialized),
+         verify, &verify_len);
 
-    if (verify_len != result_len || memcmp(result, verify, result_len) != 0) {
-        printf("Verification failed\n");
+    if (verify_len != hmac_len || memcmp(hmac_result, verify, hmac_len) != 0) {
+        printf("ViewState verification FAILED\n");
+        return 1;
     } else {
-        printf("Verification OK\n");
+        printf("ViewState verification OK\n");
     }
+
+    // 5️⃣ Simule edilen "payload execution"
+    ViewStatePayload executed;
+    deserialize_payload(serialized, &executed);
+    printf("Executing payload -> Command: %s, User: %s\n", executed.command, executed.user);
 
     return 0;
 }
